@@ -20,6 +20,7 @@ import Ride from './ride/model.js'
 import Driver from './driver/model.js'
 import Passenger from './passenger/model.js'
 import http from "http"
+import Vehicle from './vehicle/model.js';
 dotenv.config();
 
 const app = express();
@@ -119,38 +120,65 @@ const emitSocketEvent = (userId, event, payload) => {
 };
 
 const handleRideRequest = async (socket, data) => {
-  console.log('handleRideRequest',data)
-  // console.log('passengerId', passengerId, pickupLocation, dropoffLocation, fare)
-  const newRide = new Ride({
-    passenger: data?.passengerId,
-    pickupLocation:data?.pickupLocation,
-    dropoffLocation:data?.dropoffLocation,
-    fare:data?.fare,
-    status: 'requested',
-  });
+  try {
+    console.log('handleRideRequest', data);
 
-  const savedRide = await newRide.save();
+    // Step 1: Create a new ride
+    const newRide = new Ride({
+      passenger: data?.passengerId,
+      pickupLocation: data?.pickupLocation,
+      dropoffLocation: data?.dropoffLocation,
+      fare: data?.fare,
+      status: 'requested',
+    });
 
-  const nearbyDrivers = await Driver.find({
-    // location: {
-    //   $near: {
-    //     $geometry: {
-    //       type: 'Point',
-    //       coordinates: pickupLocation.coordinates,
-    //     },
-    //     $maxDistance: 10000, // 10 km radius
-    //   },
-    // },
-    // availability: true,
-  });
+    const savedRide = await newRide.save();
 
-  nearbyDrivers.forEach((driver) => {
-    console.log('driver: ' + driver._id)
-      emitSocketEvent(driver._id, 'rideRequest', savedRide);
-  });
+    // Step 2: Retrieve passenger information
+    const passenger = await Passenger.findById(data?.passengerId).select('name email phone');
+    if (!passenger) {
+      throw new Error('Passenger not found');
+    }
 
-  emitSocketEvent(data?.passengerId, 'rideRequested', savedRide);
+    // Step 3: Add passenger details to the saved ride object
+    const rideWithPassengerDetails = {
+      ...savedRide.toObject(),
+      passenger: {
+        _id: passenger._id,
+        name: passenger.name,
+        profileImage: passenger.profileImage,
+        phoneNumber: passenger.phoneNumber,
+      },
+    };
+
+    // Step 4: Find nearby drivers (commented out for now)
+    const nearbyDrivers = await Driver.find({
+      // location: {
+      //   $near: {
+      //     $geometry: {
+      //       type: 'Point',
+      //       coordinates: data?.pickupLocation.coordinates,
+      //     },
+      //     $maxDistance: 10000, // 10 km radius
+      //   },
+      // },
+      // availability: true,
+    });
+
+    // Step 5: Emit the ride request event to nearby drivers
+    nearbyDrivers.forEach((driver) => {
+      console.log('driver: ' + driver._id);
+      emitSocketEvent(driver._id, 'rideRequest', rideWithPassengerDetails);
+    });
+
+    // Step 6: Emit the ride requested event to the passenger
+    emitSocketEvent(data?.passengerId, 'rideRequested', rideWithPassengerDetails);
+
+  } catch (error) {
+    console.error('Error handling ride request:', error.message);
+  }
 };
+
 
 const handleAcceptRide = async (socket, {rideId, driverId}) => {
   try {
@@ -158,6 +186,8 @@ const handleAcceptRide = async (socket, {rideId, driverId}) => {
     if (!ride) {
       throw new Error('Ride not found');
     }
+
+    console.log('driverId',driverId)
 
     // Retrieve driver information
     const driver = await Driver.findById(driverId).select('name rating driverImage');
@@ -175,7 +205,6 @@ const handleAcceptRide = async (socket, {rideId, driverId}) => {
     ride.status = 'accepted';
     ride.driver = driverId;
     const updatedRide = await ride.save();
-
     // Add driver and vehicle information to the updated ride object
     const rideWithDetails = {
       ...updatedRide.toObject(),
@@ -192,14 +221,14 @@ const handleAcceptRide = async (socket, {rideId, driverId}) => {
       },
     };
 
-    console.log('Updated ride:', rideWithDetails);
+    console.log('ride.passenger.toString():', ride.passenger.toString());
 
     // Notify the passenger and driver
     emitSocketEvent(ride.passenger.toString(), 'rideAccepted', rideWithDetails);
     emitSocketEvent(driverId, 'rideAccepted', rideWithDetails);
 
   } catch (error) {
-    console.error('Error accepting ride:', error.message);
+    console.error('Error accepting ride:', error);
   }
 };
 
@@ -208,9 +237,9 @@ const handleConfirmRide = async (socket, { rideId, driverId }) => {
   const ride = await Ride.findById(rideId);
   if (ride) {
     ride.status = 'completed';
-    ride.driver = driverId;
+    // ride.driver = driverId;
     const updatedRide = await ride.save();
-    console.log('Updated ride',ride.passenger)
+    console.log('Updated ride>>>>',ride.driver._id,driverId)
     emitSocketEvent(ride.passenger, 'rideCompleted', updatedRide);
     emitSocketEvent(driverId, 'rideCompleted', updatedRide);
   }
